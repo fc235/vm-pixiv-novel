@@ -1,0 +1,7 @@
+{
+  "name": "pixiv-novel-extractor-userscript",
+  "private": true,
+  "scripts": {
+    "test": "node --test"
+  }
+}
