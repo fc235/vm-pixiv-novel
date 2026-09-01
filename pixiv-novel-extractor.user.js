@@ -53,12 +53,113 @@
     })
   ].join('\n\n');
 
+  const requireNumericId = (id, label) => {
+    const value = String(id ?? '');
+    if (!/^\d+$/.test(value)) throw new Error(`${label}无效`);
+    return value;
+  };
+
+  const responseBody = (response) => {
+    if (!response || response.error) {
+      throw new Error(response?.message || 'Pixiv 返回了错误');
+    }
+    if (!response.body) throw new Error('Pixiv 响应缺少正文数据');
+    return response.body;
+  };
+
+  const errorMessage = (error) => error instanceof Error ? error.message : String(error);
+
+  const createPixivClient = (requestJson, delay) => {
+    const getNovel = async (id) => {
+      const novelId = requireNumericId(id, '小说 ID');
+      const body = responseBody(await requestJson(`/ajax/novel/${novelId}?lang=zh`));
+      if (typeof body.content !== 'string') throw new Error('Pixiv 响应缺少小说正文');
+
+      const seriesId = body.seriesNavData?.seriesId;
+      return {
+        id: String(body.id ?? novelId),
+        title: String(body.title ?? '').trim() || `作品 ${novelId}`,
+        text: convertPixivText(body.content),
+        series: seriesId == null
+          ? null
+          : {
+              id: requireNumericId(seriesId, '系列 ID'),
+              title: String(body.seriesNavData.title ?? '').trim() || `系列 ${seriesId}`
+            }
+      };
+    };
+
+    const getSeriesInfo = async (seriesId) => {
+      const id = requireNumericId(seriesId, '系列 ID');
+      return responseBody(await requestJson(`/ajax/novel/series/${id}?lang=zh`));
+    };
+
+    const getSeriesEntries = async (seriesId) => {
+      const id = requireNumericId(seriesId, '系列 ID');
+      const entriesById = new Map();
+      let lastOrder = 0;
+      let total = Number.POSITIVE_INFINITY;
+
+      while (entriesById.size < total) {
+        const body = responseBody(await requestJson(
+          `/ajax/novel/series_content/${id}?limit=30&last_order=${lastOrder}&order_by=asc&lang=zh`
+        ));
+        const pageEntries = Array.isArray(body.seriesContents) ? body.seriesContents : [];
+        total = Number.isFinite(Number(body.total)) ? Number(body.total) : pageEntries.length;
+        if (pageEntries.length === 0) break;
+
+        for (const entry of pageEntries) {
+          if (/^\d+$/.test(String(entry?.id ?? ''))) entriesById.set(String(entry.id), entry);
+        }
+
+        if (entriesById.size >= total) break;
+        const pageLastOrder = Math.max(...pageEntries.map((entry) => Number(entry?.series?.order)));
+        if (!Number.isFinite(pageLastOrder) || pageLastOrder <= lastOrder) {
+          throw new Error('系列分页没有继续前进');
+        }
+        lastOrder = pageLastOrder;
+      }
+
+      return [...entriesById.values()].sort(
+        (left, right) => Number(left?.series?.order) - Number(right?.series?.order)
+      );
+    };
+
+    const getWholeSeries = async (seedNovel, onProgress = () => {}) => {
+      if (!seedNovel?.series) throw new Error('当前作品不属于系列');
+      const entries = await getSeriesEntries(seedNovel.series.id);
+      const results = [];
+
+      for (let index = 0; index < entries.length; index += 1) {
+        const id = String(entries[index].id);
+        try {
+          results.push({ ok: true, novel: await getNovel(id) });
+        } catch (error) {
+          results.push({ ok: false, id, error: errorMessage(error) });
+        }
+        onProgress(index + 1, entries.length);
+        if (index < entries.length - 1) await delay(350);
+      }
+
+      const successCount = results.filter((item) => item.ok).length;
+      return {
+        title: seedNovel.series.title,
+        results,
+        successCount,
+        failureCount: results.length - successCount
+      };
+    };
+
+    return { getNovel, getSeriesInfo, getSeriesEntries, getWholeSeries };
+  };
+
   const api = {
     parseNovelId,
     convertPixivText,
     sanitizeFilename,
     formatNovel,
-    formatSeries
+    formatSeries,
+    createPixivClient
   };
 
   function bootstrap() {}

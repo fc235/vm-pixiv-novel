@@ -35,3 +35,91 @@ test('formats a single novel and a partly failed series', () => {
     '系列\n\n===== 第 1 篇：第一章 =====\n\n甲\n\n===== 第 2 篇：作品 2 =====\n\n[提取失败：无权访问]'
   );
 });
+
+test('maps a Pixiv novel response', async () => {
+  const client = core.createPixivClient(async () => ({
+    error: false,
+    body: {
+      id: '10',
+      title: '原题',
+      content: '[[rb:字 > じ]]',
+      seriesNavData: { seriesId: '7', title: '系列名' }
+    }
+  }), async () => {});
+
+  assert.deepEqual(await client.getNovel('10'), {
+    id: '10',
+    title: '原题',
+    text: '字（じ）',
+    series: { id: '7', title: '系列名' }
+  });
+});
+
+test('paginates series content by last order without duplicates', async () => {
+  const urls = [];
+  const client = core.createPixivClient(async (url) => {
+    urls.push(url);
+    return urls.length === 1
+      ? {
+          error: false,
+          body: {
+            seriesContents: [
+              { id: '10', series: { order: 1 } },
+              { id: '11', series: { order: 2 } }
+            ],
+            total: 3
+          }
+        }
+      : {
+          error: false,
+          body: {
+            seriesContents: [{ id: '12', series: { order: 3 } }],
+            total: 3
+          }
+        };
+  }, async () => {});
+
+  assert.deepEqual((await client.getSeriesEntries('7')).map((entry) => entry.id), [
+    '10',
+    '11',
+    '12'
+  ]);
+  assert.match(urls[1], /last_order=2/);
+});
+
+test('continues a series after one novel fails and reports progress', async () => {
+  const progress = [];
+  const client = core.createPixivClient(async (url) => {
+    if (url.includes('series_content')) {
+      return {
+        error: false,
+        body: {
+          seriesContents: [
+            { id: '1', series: { order: 1 } },
+            { id: '2', series: { order: 2 } }
+          ],
+          total: 2
+        }
+      };
+    }
+    if (url.includes('/2?')) return { error: true, message: '无权访问' };
+    return {
+      error: false,
+      body: {
+        id: '1',
+        title: '一',
+        content: '正文',
+        seriesNavData: { seriesId: '7', title: '系列' }
+      }
+    };
+  }, async () => {});
+
+  const result = await client.getWholeSeries(
+    { series: { id: '7', title: '系列' } },
+    (done, total) => progress.push([done, total])
+  );
+
+  assert.equal(result.successCount, 1);
+  assert.equal(result.failureCount, 1);
+  assert.deepEqual(progress, [[1, 2], [2, 2]]);
+});
