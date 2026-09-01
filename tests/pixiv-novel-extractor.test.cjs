@@ -188,29 +188,18 @@ test('rejects an incomplete DOM fallback', () => {
   );
 });
 
-test('copyText uses the compatible text clipboard type', async () => {
+test('copyText completes when the clipboard API does not invoke a callback', async () => {
   const calls = [];
-  await core.copyText('内容', (text, info, callback) => {
+  const copying = core.copyText('内容', (text, info) => {
     calls.push([text, info]);
-    callback();
   });
+  const outcome = await Promise.race([
+    copying.then(() => 'resolved'),
+    new Promise((resolve) => setTimeout(() => resolve('timed-out'), 20))
+  ]);
+
+  assert.equal(outcome, 'resolved');
   assert.deepEqual(calls, [['内容', 'text']]);
-});
-
-test('copyText waits for clipboard confirmation before resolving', async () => {
-  let confirmCopy;
-  let resolved = false;
-  const copying = core.copyText('内容', (_text, _info, callback) => {
-    confirmCopy = callback;
-  });
-  copying.then(() => { resolved = true; });
-
-  await Promise.resolve();
-  assert.equal(resolved, false);
-
-  confirmCopy();
-  await copying;
-  assert.equal(resolved, true);
 });
 
 test('downloads a UTF-8 text blob and revokes its URL', async () => {
