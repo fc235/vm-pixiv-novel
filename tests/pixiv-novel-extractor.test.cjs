@@ -23,6 +23,8 @@ test('sanitizes Windows filenames', () => {
   assert.equal(core.sanitizeFilename('A/B:*?"<>|. '), 'A_B________');
   assert.equal(core.sanitizeFilename('   '), 'pixiv-novel');
   assert.ok(core.sanitizeFilename('文'.repeat(200)).length <= 120);
+  assert.equal(core.sanitizeFilename('CON'), '_CON');
+  assert.equal(core.sanitizeFilename(`${'a'.repeat(119)}.tail`).at(-1), '_');
 });
 
 test('formats a single novel and a partly failed series', () => {
@@ -103,6 +105,20 @@ test('supports the current Pixiv page.seriesContents response shape', async () =
   assert.deepEqual((await client.getSeriesEntries('7')).map((entry) => entry.id), ['10', '11']);
 });
 
+test('rejects an unrecognized or empty series response', async () => {
+  const malformed = core.createPixivClient(async () => ({
+    error: false,
+    body: { changedSchema: [] }
+  }), async () => {});
+  const empty = core.createPixivClient(async () => ({
+    error: false,
+    body: { page: { seriesContents: [] } }
+  }), async () => {});
+
+  await assert.rejects(malformed.getSeriesEntries('7'), /系列章节/);
+  await assert.rejects(empty.getSeriesEntries('7'), /系列没有可提取的章节/);
+});
+
 test('continues a series after one novel fails and reports progress', async () => {
   const progress = [];
   const client = core.createPixivClient(async (url) => {
@@ -175,7 +191,7 @@ test('rejects an incomplete DOM fallback', () => {
 test('copyText passes the plain text MIME type', async () => {
   const calls = [];
   await core.copyText('内容', (...args) => calls.push(args));
-  assert.deepEqual(calls, [['内容', 'text/plain']]);
+  assert.deepEqual(calls, [['内容', { type: 'text', mimetype: 'text/plain' }]]);
 });
 
 test('downloads a UTF-8 text blob and revokes its URL', async () => {

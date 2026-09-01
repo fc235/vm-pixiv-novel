@@ -35,11 +35,15 @@
     .trim();
 
   const sanitizeFilename = (name) => {
-    const cleaned = String(name ?? '')
+    let cleaned = String(name ?? '')
       .replace(/[\\/:*?"<>|]/g, '_')
       .trim()
       .replace(/[. ]+$/g, '_');
-    return (cleaned || 'pixiv-novel').slice(0, 120);
+    cleaned = (cleaned || 'pixiv-novel').slice(0, 120).replace(/[. ]+$/g, '_');
+    if (/^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$/i.test(cleaned)) {
+      cleaned = `_${cleaned}`;
+    }
+    return cleaned;
   };
 
   const formatNovel = ({ title, text }) => `${title}\n\n${text}`;
@@ -104,12 +108,18 @@
         const body = responseBody(await requestJson(
           `/ajax/novel/series_content/${id}?limit=30&last_order=${lastOrder}&order_by=asc&lang=zh`
         ));
-        const pageEntries = Array.isArray(body.seriesContents)
-          ? body.seriesContents
-          : Array.isArray(body.page?.seriesContents) ? body.page.seriesContents : [];
+        const legacyEntries = body.seriesContents;
+        const currentEntries = body.page?.seriesContents;
+        if (!Array.isArray(legacyEntries) && !Array.isArray(currentEntries)) {
+          throw new Error('Pixiv 响应缺少系列章节列表');
+        }
+        const pageEntries = Array.isArray(legacyEntries) ? legacyEntries : currentEntries;
         const hasTotal = Number.isFinite(Number(body.total));
         if (hasTotal) total = Number(body.total);
-        if (pageEntries.length === 0) break;
+        if (pageEntries.length === 0) {
+          if (entriesById.size === 0) throw new Error('系列没有可提取的章节');
+          break;
+        }
 
         for (const entry of pageEntries) {
           if (/^\d+$/.test(String(entry?.id ?? ''))) entriesById.set(String(entry.id), entry);
@@ -189,7 +199,7 @@
   };
 
   const copyText = async (text, clipboard) => {
-    await Promise.resolve(clipboard(text, 'text/plain'));
+    await Promise.resolve(clipboard(text, { type: 'text', mimetype: 'text/plain' }));
   };
 
   const downloadText = (title, text, environment) => {
