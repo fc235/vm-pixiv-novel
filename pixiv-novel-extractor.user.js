@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Pixiv 小说提取器
 // @namespace    https://github.com/local/pixiv-novel-extractor
-// @version      0.1.0
+// @version      0.1.1
 // @description  提取 Pixiv 单篇小说或整个系列，并复制或下载为纯文本。
 // @match        https://www.pixiv.net/novel/show.php?id=*
 // @grant        GM_registerMenuCommand
@@ -198,9 +198,14 @@
     };
   };
 
-  const copyText = async (text, clipboard) => {
-    await Promise.resolve(clipboard(text, { type: 'text', mimetype: 'text/plain' }));
-  };
+  const copyText = (text, clipboard) => new Promise((resolve, reject) => {
+    try {
+      const result = clipboard(text, 'text', resolve);
+      if (result && typeof result.then === 'function') result.then(resolve, reject);
+    } catch (error) {
+      reject(error);
+    }
+  });
 
   const downloadText = (title, text, environment) => {
     const blob = new environment.Blob([text], { type: 'text/plain;charset=utf-8' });

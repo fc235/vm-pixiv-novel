@@ -188,10 +188,29 @@ test('rejects an incomplete DOM fallback', () => {
   );
 });
 
-test('copyText passes the plain text MIME type', async () => {
+test('copyText uses the compatible text clipboard type', async () => {
   const calls = [];
-  await core.copyText('内容', (...args) => calls.push(args));
-  assert.deepEqual(calls, [['内容', { type: 'text', mimetype: 'text/plain' }]]);
+  await core.copyText('内容', (text, info, callback) => {
+    calls.push([text, info]);
+    callback();
+  });
+  assert.deepEqual(calls, [['内容', 'text']]);
+});
+
+test('copyText waits for clipboard confirmation before resolving', async () => {
+  let confirmCopy;
+  let resolved = false;
+  const copying = core.copyText('内容', (_text, _info, callback) => {
+    confirmCopy = callback;
+  });
+  copying.then(() => { resolved = true; });
+
+  await Promise.resolve();
+  assert.equal(resolved, false);
+
+  confirmCopy();
+  await copying;
+  assert.equal(resolved, true);
 });
 
 test('downloads a UTF-8 text blob and revokes its URL', async () => {
