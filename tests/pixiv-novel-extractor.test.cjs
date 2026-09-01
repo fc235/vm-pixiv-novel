@@ -87,6 +87,22 @@ test('paginates series content by last order without duplicates', async () => {
   assert.match(urls[1], /last_order=2/);
 });
 
+test('supports the current Pixiv page.seriesContents response shape', async () => {
+  const client = core.createPixivClient(async () => ({
+    error: false,
+    body: {
+      page: {
+        seriesContents: [
+          { id: '10', series: { contentOrder: 1 } },
+          { id: '11', series: { contentOrder: 2 } }
+        ]
+      }
+    }
+  }), async () => {});
+
+  assert.deepEqual((await client.getSeriesEntries('7')).map((entry) => entry.id), ['10', '11']);
+});
+
 test('continues a series after one novel fails and reports progress', async () => {
   const progress = [];
   const client = core.createPixivClient(async (url) => {
@@ -139,6 +155,16 @@ test('extracts title and rendered paragraphs from DOM fallback', () => {
   });
 });
 
+test('extracts the current Pixiv nested-main body layout', () => {
+  const nodes = {
+    'main h1': { textContent: '当前标题' },
+    'main > main': { innerText: '当前正文' }
+  };
+  const doc = { querySelector: (selector) => nodes[selector] ?? null };
+
+  assert.equal(core.extractNovelFromDocument(doc, '9').text, '当前正文');
+});
+
 test('rejects an incomplete DOM fallback', () => {
   assert.throws(
     () => core.extractNovelFromDocument({ querySelector: () => null }, '9'),
@@ -177,4 +203,234 @@ test('downloads a UTF-8 text blob and revokes its URL', async () => {
   assert.equal(calls.downloads[0].url, 'blob:test');
   assert.equal(calls.downloads[0].name, 'A_B.txt');
   assert.deepEqual(calls.revoked, ['blob:test']);
+});
+
+const makeControllerDependencies = (overrides = {}) => ({
+  id: '9',
+  client: {
+    getNovel: async () => ({ id: '9', title: '标题', text: '正文', series: null }),
+    getWholeSeries: async () => ({ title: '系列', results: [], successCount: 0, failureCount: 0 })
+  },
+  doc: {},
+  fallback: () => ({ id: '9', title: '兜底', text: '页面正文', series: null }),
+  copy: async () => {},
+  download: async () => {},
+  setStatus: () => {},
+  setBusy: () => {},
+  onNovelLoaded: () => {},
+  ...overrides
+});
+
+test('controller falls back to the rendered document after an API failure', async () => {
+  const calls = [];
+  const controller = core.createController(makeControllerDependencies({
+    client: {
+      getNovel: async () => {
+        calls.push('api');
+        throw new Error('接口失败');
+      }
+    },
+    fallback: () => {
+      calls.push('dom');
+      return { id: '9', title: '兜底', text: '页面正文', series: null };
+    }
+  }));
+
+  assert.equal((await controller.loadCurrent()).title, '兜底');
+  assert.deepEqual(calls, ['api', 'dom']);
+});
+
+test('controller copies and downloads the current novel', async () => {
+  const copied = [];
+  const downloaded = [];
+  const statuses = [];
+  const controller = core.createController(makeControllerDependencies({
+    copy: async (text) => copied.push(text),
+    download: async (title, text) => downloaded.push([title, text]),
+    setStatus: (status) => statuses.push(status)
+  }));
+
+  await controller.copyCurrent();
+  await controller.downloadCurrent();
+
+  assert.deepEqual(copied, ['标题\n\n正文']);
+  assert.deepEqual(downloaded, [['标题', '标题\n\n正文']]);
+  assert.deepEqual(statuses, ['已复制当前小说', '已开始下载当前小说']);
+});
+
+test('controller rejects series actions for standalone novels', async () => {
+  const statuses = [];
+  const controller = core.createController(makeControllerDependencies({
+    setStatus: (status) => statuses.push(status)
+  }));
+
+  await assert.rejects(controller.copySeries(), /当前作品不属于系列/);
+  assert.equal(statuses.at(-1), '失败：当前作品不属于系列');
+});
+
+test('controller reports series progress and partial success', async () => {
+  const statuses = [];
+  const copied = [];
+  const results = [
+    { ok: true, novel: { title: '第一章', text: '甲' } },
+    { ok: false, id: '2', error: '无权访问' }
+  ];
+  const client = {
+    getNovel: async () => ({
+      id: '9',
+      title: '标题',
+      text: '正文',
+      series: { id: '7', title: '系列' }
+    }),
+    getWholeSeries: async (_novel, onProgress) => {
+      onProgress(1, 2);
+      onProgress(2, 2);
+      return { title: '系列', results, successCount: 1, failureCount: 1 };
+    }
+  };
+  const controller = core.createController(makeControllerDependencies({
+    client,
+    copy: async (text) => copied.push(text),
+    setStatus: (status) => statuses.push(status)
+  }));
+
+  await controller.copySeries();
+
+  assert.equal(statuses[0], '正在提取系列：1 / 2');
+  assert.equal(statuses.at(-1), '系列提取完成：成功 1 篇，失败 1 篇');
+  assert.match(copied[0], /第 2 篇：作品 2/);
+});
+
+test('controller downloads a formatted series using its title', async () => {
+  const downloaded = [];
+  const client = {
+    getNovel: async () => ({
+      id: '9',
+      title: '标题',
+      text: '正文',
+      series: { id: '7', title: '系列' }
+    }),
+    getWholeSeries: async () => ({
+      title: '系列',
+      results: [{ ok: true, novel: { title: '第一章', text: '甲' } }],
+      successCount: 1,
+      failureCount: 0
+    })
+  };
+  const controller = core.createController(makeControllerDependencies({
+    client,
+    download: async (title, text) => downloaded.push([title, text])
+  }));
+
+  await controller.downloadSeries();
+
+  assert.equal(downloaded[0][0], '系列');
+  assert.match(downloaded[0][1], /^系列\n\n===== 第 1 篇：第一章 =====/);
+});
+
+class FakeElement {
+  constructor(tagName) {
+    this.tagName = tagName.toUpperCase();
+    this.children = [];
+    this.attributes = {};
+    this.listeners = {};
+    this.disabled = false;
+    this.textContent = '';
+  }
+
+  append(...children) {
+    this.children.push(...children);
+  }
+
+  attachShadow() {
+    this.shadowRoot = new FakeElement('shadow-root');
+    return this.shadowRoot;
+  }
+
+  setAttribute(name, value) {
+    this.attributes[name] = String(value);
+  }
+
+  addEventListener(name, listener) {
+    this.listeners[name] = listener;
+  }
+}
+
+class FakeDocument {
+  constructor() {
+    this.body = new FakeElement('body');
+  }
+
+  createElement(tagName) {
+    return new FakeElement(tagName);
+  }
+}
+
+const descendants = (element) => [
+  element,
+  ...element.children.flatMap((child) => descendants(child))
+];
+
+test('floating panel exposes four actions and preserves standalone series disabling', () => {
+  const doc = new FakeDocument();
+  const actions = {
+    copyCurrent: async () => {},
+    downloadCurrent: async () => {},
+    copySeries: async () => {},
+    downloadSeries: async () => {}
+  };
+  const panel = core.createPanel(doc, actions);
+  const nodes = descendants(panel.host.shadowRoot);
+  const actionButtons = nodes.filter((node) => node.attributes['data-action']);
+  const status = nodes.find((node) => node.attributes['aria-live'] === 'polite');
+
+  assert.deepEqual(actionButtons.map((button) => button.textContent), [
+    '复制当前小说',
+    '下载当前小说',
+    '复制整个系列',
+    '下载整个系列'
+  ]);
+  assert.ok(actionButtons.every((button) => typeof button.listeners.click === 'function'));
+  assert.ok(status);
+
+  panel.setSeriesAvailable(false);
+  panel.setBusy(true);
+  panel.setBusy(false);
+
+  assert.equal(actionButtons[0].disabled, false);
+  assert.equal(actionButtons[1].disabled, false);
+  assert.equal(actionButtons[2].disabled, true);
+  assert.equal(actionButtons[3].disabled, true);
+});
+
+test('bootstrap registers all four menu commands on a valid novel URL', () => {
+  const labels = [];
+  const panel = {
+    setActions(actions) { this.actions = actions; },
+    setStatus() {},
+    setBusy() {},
+    setSeriesAvailable() {}
+  };
+  const controller = core.bootstrap({
+    href: 'https://www.pixiv.net/novel/show.php?id=9',
+    document: {},
+    fetch: async () => ({ ok: true, json: async () => ({}) }),
+    clipboard: () => {},
+    download: () => {},
+    registerMenuCommand: (label) => labels.push(label),
+    Blob: class {},
+    createObjectURL: () => 'blob:test',
+    revokeObjectURL: () => {},
+    delay: async () => {},
+    createPanel: () => panel
+  });
+
+  assert.deepEqual(labels, [
+    '复制当前小说',
+    '下载当前小说',
+    '复制整个系列',
+    '下载整个系列'
+  ]);
+  assert.equal(typeof controller.copyCurrent, 'function');
+  assert.equal(panel.actions, controller);
 });

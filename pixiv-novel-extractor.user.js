@@ -104,16 +104,21 @@
         const body = responseBody(await requestJson(
           `/ajax/novel/series_content/${id}?limit=30&last_order=${lastOrder}&order_by=asc&lang=zh`
         ));
-        const pageEntries = Array.isArray(body.seriesContents) ? body.seriesContents : [];
-        total = Number.isFinite(Number(body.total)) ? Number(body.total) : pageEntries.length;
+        const pageEntries = Array.isArray(body.seriesContents)
+          ? body.seriesContents
+          : Array.isArray(body.page?.seriesContents) ? body.page.seriesContents : [];
+        const hasTotal = Number.isFinite(Number(body.total));
+        if (hasTotal) total = Number(body.total);
         if (pageEntries.length === 0) break;
 
         for (const entry of pageEntries) {
           if (/^\d+$/.test(String(entry?.id ?? ''))) entriesById.set(String(entry.id), entry);
         }
 
-        if (entriesById.size >= total) break;
-        const pageLastOrder = Math.max(...pageEntries.map((entry) => Number(entry?.series?.order)));
+        if ((hasTotal && entriesById.size >= total) || (!hasTotal && pageEntries.length < 30)) break;
+        const pageLastOrder = Math.max(...pageEntries.map((entry) => Number(
+          entry?.series?.order ?? entry?.series?.contentOrder ?? entry?.seriesContentOrder
+        )));
         if (!Number.isFinite(pageLastOrder) || pageLastOrder <= lastOrder) {
           throw new Error('系列分页没有继续前进');
         }
@@ -121,7 +126,11 @@
       }
 
       return [...entriesById.values()].sort(
-        (left, right) => Number(left?.series?.order) - Number(right?.series?.order)
+        (left, right) => Number(
+          left?.series?.order ?? left?.series?.contentOrder ?? left?.seriesContentOrder
+        ) - Number(
+          right?.series?.order ?? right?.series?.contentOrder ?? right?.seriesContentOrder
+        )
       );
     };
 
@@ -161,6 +170,7 @@
     const novelId = requireNumericId(id, '小说 ID');
     const titleNode = firstMatchingNode(doc, ['main h1', 'h1']);
     const textNode = firstMatchingNode(doc, [
+      'main > main',
       '[data-testid="novel-text"]',
       'main article',
       'main [role="article"]'
@@ -210,6 +220,234 @@
     });
   };
 
+  const createController = (dependencies) => {
+    const {
+      id,
+      client,
+      doc,
+      fallback,
+      copy,
+      download,
+      setStatus,
+      setBusy,
+      onNovelLoaded
+    } = dependencies;
+    let currentNovel = null;
+
+    const loadCurrent = async () => {
+      if (currentNovel) return currentNovel;
+      try {
+        currentNovel = await client.getNovel(id);
+      } catch (_error) {
+        currentNovel = fallback(doc, id);
+      }
+      onNovelLoaded(currentNovel);
+      return currentNovel;
+    };
+
+    const run = async (action) => {
+      setBusy(true);
+      try {
+        return await action();
+      } catch (error) {
+        setStatus(`失败：${errorMessage(error)}`);
+        throw error;
+      } finally {
+        setBusy(false);
+      }
+    };
+
+    const copyCurrent = () => run(async () => {
+      const novel = await loadCurrent();
+      await copy(formatNovel(novel));
+      setStatus('已复制当前小说');
+    });
+
+    const downloadCurrent = () => run(async () => {
+      const novel = await loadCurrent();
+      await download(novel.title, formatNovel(novel));
+      setStatus('已开始下载当前小说');
+    });
+
+    const loadSeries = async () => {
+      const novel = await loadCurrent();
+      if (!novel.series) throw new Error('当前作品不属于系列');
+      return client.getWholeSeries(novel, (done, total) => {
+        setStatus(`正在提取系列：${done} / ${total}`);
+      });
+    };
+
+    const seriesDoneStatus = (series) => (
+      `系列提取完成：成功 ${series.successCount} 篇，失败 ${series.failureCount} 篇`
+    );
+
+    const copySeries = () => run(async () => {
+      const series = await loadSeries();
+      await copy(formatSeries(series.title, series.results));
+      setStatus(seriesDoneStatus(series));
+    });
+
+    const downloadSeries = () => run(async () => {
+      const series = await loadSeries();
+      await download(series.title, formatSeries(series.title, series.results));
+      setStatus(seriesDoneStatus(series));
+    });
+
+    return { loadCurrent, copyCurrent, downloadCurrent, copySeries, downloadSeries };
+  };
+
+  const actionDefinitions = [
+    ['copyCurrent', '复制当前小说', false],
+    ['downloadCurrent', '下载当前小说', false],
+    ['copySeries', '复制整个系列', true],
+    ['downloadSeries', '下载整个系列', true]
+  ];
+
+  const createPanel = (doc, initialActions = {}) => {
+    const host = doc.createElement('div');
+    host.setAttribute('id', 'pixiv-novel-extractor-host');
+    const shadow = host.attachShadow({ mode: 'open' });
+
+    const style = doc.createElement('style');
+    style.textContent = `
+      :host { position: fixed; right: 20px; bottom: 24px; z-index: 2147483647;
+        color: #f5f5f5; font: 14px/1.4 system-ui, sans-serif; }
+      section { width: 210px; padding: 12px; border: 1px solid #444; border-radius: 12px;
+        background: rgba(28, 28, 32, .96); box-shadow: 0 8px 28px rgba(0, 0, 0, .35); }
+      header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+      strong { font-size: 14px; }
+      .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      button { border: 0; border-radius: 8px; padding: 8px; color: #fff; background: #4b4b55;
+        cursor: pointer; font: inherit; }
+      button:hover:not(:disabled) { background: #62626e; }
+      button:disabled { cursor: not-allowed; opacity: .45; }
+      .collapse { width: 28px; padding: 3px; background: transparent; }
+      .status { min-height: 20px; margin: 9px 0 0; color: #c9c9d2; font-size: 12px; }
+    `;
+
+    const section = doc.createElement('section');
+    const header = doc.createElement('header');
+    const title = doc.createElement('strong');
+    title.textContent = 'Pixiv 小说提取';
+    const collapse = doc.createElement('button');
+    collapse.textContent = '−';
+    collapse.setAttribute('class', 'collapse');
+    collapse.setAttribute('type', 'button');
+    collapse.setAttribute('aria-label', '收起提取面板');
+    header.append(title, collapse);
+
+    const actionBox = doc.createElement('div');
+    actionBox.setAttribute('class', 'actions');
+    const buttons = [];
+    let actions = initialActions;
+    let busy = false;
+    let seriesAvailable = true;
+
+    for (const [name, label, isSeries] of actionDefinitions) {
+      const button = doc.createElement('button');
+      button.textContent = label;
+      button.setAttribute('type', 'button');
+      button.setAttribute('data-action', name);
+      button.addEventListener('click', () => {
+        const action = actions[name];
+        if (typeof action === 'function') Promise.resolve(action()).catch(() => {});
+      });
+      button.isSeriesAction = isSeries;
+      buttons.push(button);
+      actionBox.append(button);
+    }
+
+    const status = doc.createElement('p');
+    status.textContent = '准备就绪';
+    status.setAttribute('class', 'status');
+    status.setAttribute('aria-live', 'polite');
+    section.append(header, actionBox, status);
+    shadow.append(style, section);
+    doc.body.append(host);
+
+    const refreshButtons = () => {
+      for (const button of buttons) {
+        button.disabled = busy || (button.isSeriesAction && !seriesAvailable);
+      }
+    };
+
+    let collapsed = false;
+    collapse.addEventListener('click', () => {
+      collapsed = !collapsed;
+      actionBox.hidden = collapsed;
+      status.hidden = collapsed;
+      collapse.textContent = collapsed ? '+' : '−';
+      collapse.setAttribute('aria-label', collapsed ? '展开提取面板' : '收起提取面板');
+    });
+
+    return {
+      host,
+      setActions(nextActions) { actions = nextActions; },
+      setStatus(message) { status.textContent = message; },
+      setBusy(value) { busy = Boolean(value); refreshButtons(); },
+      setSeriesAvailable(value) { seriesAvailable = Boolean(value); refreshButtons(); }
+    };
+  };
+
+  const browserEnvironment = () => ({
+    href: location.href,
+    document,
+    fetch,
+    clipboard: GM_setClipboard,
+    download: GM_download,
+    registerMenuCommand: GM_registerMenuCommand,
+    Blob,
+    createObjectURL: (blob) => URL.createObjectURL(blob),
+    revokeObjectURL: (url) => URL.revokeObjectURL(url),
+    delay: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    createPanel
+  });
+
+  const bootstrap = (environment) => {
+    const runtime = environment ?? browserEnvironment();
+    const id = parseNovelId(runtime.href);
+    if (!id) return null;
+
+    const requestJson = async (url) => {
+      const response = await runtime.fetch(url, {
+        credentials: 'include',
+        headers: { Accept: 'application/json' }
+      });
+      if (!response.ok) throw new Error(`Pixiv 请求失败（HTTP ${response.status}）`);
+      return response.json();
+    };
+    const client = createPixivClient(requestJson, runtime.delay);
+    const panel = runtime.createPanel(runtime.document, {});
+    const controller = createController({
+      id,
+      client,
+      doc: runtime.document,
+      fallback: extractNovelFromDocument,
+      copy: (text) => copyText(text, runtime.clipboard),
+      download: (title, text) => downloadText(title, text, {
+        Blob: runtime.Blob,
+        createObjectURL: runtime.createObjectURL,
+        revokeObjectURL: runtime.revokeObjectURL,
+        download: runtime.download
+      }),
+      setStatus: panel.setStatus,
+      setBusy: panel.setBusy,
+      onNovelLoaded: (novel) => panel.setSeriesAvailable(Boolean(novel.series))
+    });
+    panel.setActions(controller);
+
+    for (const [name, label] of actionDefinitions) {
+      runtime.registerMenuCommand(label, () => {
+        Promise.resolve(controller[name]()).catch(() => {});
+      });
+    }
+
+    controller.loadCurrent().catch((error) => {
+      panel.setStatus(`失败：${errorMessage(error)}`);
+    });
+    return controller;
+  };
+
   const api = {
     parseNovelId,
     convertPixivText,
@@ -219,10 +457,11 @@
     createPixivClient,
     extractNovelFromDocument,
     copyText,
-    downloadText
+    downloadText,
+    createController,
+    createPanel,
+    bootstrap
   };
-
-  function bootstrap() {}
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = api;
