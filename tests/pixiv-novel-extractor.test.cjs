@@ -1,5 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
 const core = require('../pixiv-novel-extractor.user.js');
 
 test('parses only Pixiv novel detail IDs', () => {
@@ -457,6 +460,21 @@ test('panel minimizes to one circular launcher and restores without rebuilding',
   assert.equal(panel.host.shadowRoot.children.length, originalChildCount);
 });
 
+test('collapsed-panel CSS defines the compact launcher contract', () => {
+  const doc = new FakeDocument();
+  const panel = core.createPanel(doc);
+  const style = panel.host.shadowRoot.children.find((node) => node.tagName === 'STYLE');
+  const collapsedRule = style.textContent.match(/section\.collapsed\s*\{([^}]*)}/)?.[1];
+  const hiddenRule = style.textContent.match(
+    /section\.collapsed strong, section\.collapsed \.actions, section\.collapsed \.status\s*\{([^}]*)}/
+  )?.[1];
+
+  assert.match(collapsedRule, /\bwidth:\s*44px/);
+  assert.match(collapsedRule, /\bheight:\s*44px/);
+  assert.match(collapsedRule, /\bborder-radius:\s*50%/);
+  assert.match(hiddenRule, /\bdisplay:\s*none/);
+});
+
 test('panel starts minimized without writing the preference again', () => {
   const doc = new FakeDocument();
   const changes = [];
@@ -479,8 +497,28 @@ test('collapsed preference reads and writes safely when storage throws', () => {
   assert.doesNotThrow(() => core.saveCollapsedPreference(() => { throw new Error('blocked'); }, true));
 });
 
+test('userscript bootstrap tolerates unavailable preference globals', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'pixiv-novel-extractor.user.js'), 'utf8');
+  const sandbox = {
+    URL,
+    location: { href: 'https://www.pixiv.net/novel/show.php?id=not-a-novel' },
+    document: {},
+    fetch: () => {},
+    GM_setClipboard: () => {},
+    GM_download: () => {},
+    GM_registerMenuCommand: () => {},
+    Blob: class {},
+    Promise,
+    setTimeout
+  };
+
+  assert.doesNotThrow(() => vm.runInNewContext(source, sandbox));
+});
+
 test('bootstrap registers the three menu commands on a valid novel URL', () => {
   const labels = [];
+  const writes = [];
+  let panelOptions;
   const panel = {
     setActions(actions) { this.actions = actions; },
     setStatus() {},
@@ -498,7 +536,16 @@ test('bootstrap registers the three menu commands on a valid novel URL', () => {
     createObjectURL: () => 'blob:test',
     revokeObjectURL: () => {},
     delay: async () => {},
-    createPanel: () => panel
+    getValue: (key, defaultValue) => {
+      assert.equal(key, 'panelCollapsed');
+      assert.equal(defaultValue, false);
+      return true;
+    },
+    setValue: (key, value) => writes.push([key, value]),
+    createPanel: (_doc, _actions, options) => {
+      panelOptions = options;
+      return panel;
+    }
   });
 
   assert.deepEqual(labels, [
@@ -509,4 +556,7 @@ test('bootstrap registers the three menu commands on a valid novel URL', () => {
   assert.equal(typeof controller.copyCurrent, 'function');
   assert.equal(controller.copySeries, undefined);
   assert.equal(panel.actions, controller);
+  assert.equal(panelOptions.initialCollapsed, true);
+  panelOptions.onCollapsedChange(false);
+  assert.deepEqual(writes, [['panelCollapsed', false]]);
 });
