@@ -153,13 +153,73 @@
     return { getNovel, getSeriesInfo, getSeriesEntries, getWholeSeries };
   };
 
+  const firstMatchingNode = (doc, selectors) => selectors
+    .map((selector) => doc.querySelector(selector))
+    .find(Boolean);
+
+  const extractNovelFromDocument = (doc, id) => {
+    const novelId = requireNumericId(id, '小说 ID');
+    const titleNode = firstMatchingNode(doc, ['main h1', 'h1']);
+    const textNode = firstMatchingNode(doc, [
+      '[data-testid="novel-text"]',
+      'main article',
+      'main [role="article"]'
+    ]);
+    const rawText = textNode?.innerText ?? textNode?.textContent ?? '';
+    if (!String(rawText).trim()) throw new Error('未找到页面正文');
+    const title = String(titleNode?.textContent ?? '').trim();
+    if (!title) throw new Error('未找到页面标题');
+
+    return {
+      id: novelId,
+      title,
+      text: convertPixivText(rawText),
+      series: null
+    };
+  };
+
+  const copyText = async (text, clipboard) => {
+    await Promise.resolve(clipboard(text, 'text/plain'));
+  };
+
+  const downloadText = (title, text, environment) => {
+    const blob = new environment.Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = environment.createObjectURL(blob);
+
+    return new Promise((resolve, reject) => {
+      let finished = false;
+      const finish = (error) => {
+        if (finished) return;
+        finished = true;
+        environment.revokeObjectURL(url);
+        if (error) reject(error);
+        else resolve();
+      };
+
+      try {
+        environment.download({
+          url,
+          name: `${sanitizeFilename(title)}.txt`,
+          saveAs: true,
+          onload: () => finish(),
+          onerror: () => finish(new Error('下载失败'))
+        });
+      } catch (error) {
+        finish(error);
+      }
+    });
+  };
+
   const api = {
     parseNovelId,
     convertPixivText,
     sanitizeFilename,
     formatNovel,
     formatSeries,
-    createPixivClient
+    createPixivClient,
+    extractNovelFromDocument,
+    copyText,
+    downloadText
   };
 
   function bootstrap() {}

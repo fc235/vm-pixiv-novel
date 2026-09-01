@@ -123,3 +123,58 @@ test('continues a series after one novel fails and reports progress', async () =
   assert.equal(result.failureCount, 1);
   assert.deepEqual(progress, [[1, 2], [2, 2]]);
 });
+
+test('extracts title and rendered paragraphs from DOM fallback', () => {
+  const nodes = {
+    'main h1': { textContent: '标题' },
+    '[data-testid="novel-text"]': { innerText: '第一段\n\n第二段' }
+  };
+  const doc = { querySelector: (selector) => nodes[selector] ?? null };
+
+  assert.deepEqual(core.extractNovelFromDocument(doc, '9'), {
+    id: '9',
+    title: '标题',
+    text: '第一段\n\n第二段',
+    series: null
+  });
+});
+
+test('rejects an incomplete DOM fallback', () => {
+  assert.throws(
+    () => core.extractNovelFromDocument({ querySelector: () => null }, '9'),
+    /页面正文/
+  );
+});
+
+test('copyText passes the plain text MIME type', async () => {
+  const calls = [];
+  await core.copyText('内容', (...args) => calls.push(args));
+  assert.deepEqual(calls, [['内容', 'text/plain']]);
+});
+
+test('downloads a UTF-8 text blob and revokes its URL', async () => {
+  const calls = { blobs: [], downloads: [], revoked: [] };
+  class FakeBlob {
+    constructor(parts, options) {
+      this.parts = parts;
+      this.type = options.type;
+      calls.blobs.push(this);
+    }
+  }
+  const environment = {
+    Blob: FakeBlob,
+    createObjectURL: () => 'blob:test',
+    revokeObjectURL: (url) => calls.revoked.push(url),
+    download: (options) => {
+      calls.downloads.push(options);
+      options.onload();
+    }
+  };
+
+  await core.downloadText('A/B', '正文', environment);
+
+  assert.equal(calls.blobs[0].type, 'text/plain;charset=utf-8');
+  assert.equal(calls.downloads[0].url, 'blob:test');
+  assert.equal(calls.downloads[0].name, 'A_B.txt');
+  assert.deepEqual(calls.revoked, ['blob:test']);
+});
