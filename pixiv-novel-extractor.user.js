@@ -291,25 +291,18 @@
       `系列提取完成：成功 ${series.successCount} 篇，失败 ${series.failureCount} 篇`
     );
 
-    const copySeries = () => run(async () => {
-      const series = await loadSeries();
-      await copy(formatSeries(series.title, series.results));
-      setStatus(seriesDoneStatus(series));
-    });
-
     const downloadSeries = () => run(async () => {
       const series = await loadSeries();
       await download(series.title, formatSeries(series.title, series.results));
       setStatus(seriesDoneStatus(series));
     });
 
-    return { loadCurrent, copyCurrent, downloadCurrent, copySeries, downloadSeries };
+    return { loadCurrent, copyCurrent, downloadCurrent, downloadSeries };
   };
 
   const actionDefinitions = [
     ['copyCurrent', '复制当前小说', false],
     ['downloadCurrent', '下载当前小说', false],
-    ['copySeries', '复制整个系列', true],
     ['downloadSeries', '下载整个系列', true]
   ];
 

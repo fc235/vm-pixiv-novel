@@ -282,19 +282,20 @@ test('controller copies and downloads the current novel', async () => {
   assert.deepEqual(statuses, ['已复制当前小说', '已开始下载当前小说']);
 });
 
-test('controller rejects series actions for standalone novels', async () => {
+test('controller rejects series download for standalone novels', async () => {
   const statuses = [];
   const controller = core.createController(makeControllerDependencies({
     setStatus: (status) => statuses.push(status)
   }));
 
-  await assert.rejects(controller.copySeries(), /当前作品不属于系列/);
+  await assert.rejects(controller.downloadSeries(), /当前作品不属于系列/);
   assert.equal(statuses.at(-1), '失败：当前作品不属于系列');
+  assert.equal(controller.copySeries, undefined);
 });
 
-test('controller reports series progress and partial success', async () => {
+test('controller reports series progress and partial success while downloading', async () => {
   const statuses = [];
-  const copied = [];
+  const downloaded = [];
   const results = [
     { ok: true, novel: { title: '第一章', text: '甲' } },
     { ok: false, id: '2', error: '无权访问' }
@@ -314,15 +315,15 @@ test('controller reports series progress and partial success', async () => {
   };
   const controller = core.createController(makeControllerDependencies({
     client,
-    copy: async (text) => copied.push(text),
+    download: async (title, text) => downloaded.push([title, text]),
     setStatus: (status) => statuses.push(status)
   }));
 
-  await controller.copySeries();
+  await controller.downloadSeries();
 
   assert.equal(statuses[0], '正在提取系列：1 / 2');
   assert.equal(statuses.at(-1), '系列提取完成：成功 1 篇，失败 1 篇');
-  assert.match(copied[0], /第 2 篇：作品 2/);
+  assert.match(downloaded[0][1], /第 2 篇：作品 2/);
 });
 
 test('controller downloads a formatted series using its title', async () => {
@@ -395,12 +396,11 @@ const descendants = (element) => [
   ...element.children.flatMap((child) => descendants(child))
 ];
 
-test('floating panel exposes four actions and preserves standalone series disabling', () => {
+test('floating panel exposes three actions and preserves standalone series disabling', () => {
   const doc = new FakeDocument();
   const actions = {
     copyCurrent: async () => {},
     downloadCurrent: async () => {},
-    copySeries: async () => {},
     downloadSeries: async () => {}
   };
   const panel = core.createPanel(doc, actions);
@@ -411,7 +411,6 @@ test('floating panel exposes four actions and preserves standalone series disabl
   assert.deepEqual(actionButtons.map((button) => button.textContent), [
     '复制当前小说',
     '下载当前小说',
-    '复制整个系列',
     '下载整个系列'
   ]);
   assert.ok(actionButtons.every((button) => typeof button.listeners.click === 'function'));
@@ -424,10 +423,9 @@ test('floating panel exposes four actions and preserves standalone series disabl
   assert.equal(actionButtons[0].disabled, false);
   assert.equal(actionButtons[1].disabled, false);
   assert.equal(actionButtons[2].disabled, true);
-  assert.equal(actionButtons[3].disabled, true);
 });
 
-test('bootstrap registers all four menu commands on a valid novel URL', () => {
+test('bootstrap registers the three menu commands on a valid novel URL', () => {
   const labels = [];
   const panel = {
     setActions(actions) { this.actions = actions; },
@@ -452,9 +450,9 @@ test('bootstrap registers all four menu commands on a valid novel URL', () => {
   assert.deepEqual(labels, [
     '复制当前小说',
     '下载当前小说',
-    '复制整个系列',
     '下载整个系列'
   ]);
   assert.equal(typeof controller.copyCurrent, 'function');
+  assert.equal(controller.copySeries, undefined);
   assert.equal(panel.actions, controller);
 });
