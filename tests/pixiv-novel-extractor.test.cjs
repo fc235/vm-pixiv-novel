@@ -379,6 +379,10 @@ class FakeElement {
   addEventListener(name, listener) {
     this.listeners[name] = listener;
   }
+
+  click() {
+    this.listeners.click?.();
+  }
 }
 
 class FakeDocument {
@@ -423,6 +427,56 @@ test('floating panel exposes three actions and preserves standalone series disab
   assert.equal(actionButtons[0].disabled, false);
   assert.equal(actionButtons[1].disabled, false);
   assert.equal(actionButtons[2].disabled, true);
+});
+
+test('panel minimizes to one circular launcher and restores without rebuilding', () => {
+  const doc = new FakeDocument();
+  const changes = [];
+  const panel = core.createPanel(doc, {}, {
+    initialCollapsed: false,
+    onCollapsedChange: (value) => changes.push(value)
+  });
+  const nodes = descendants(panel.host.shadowRoot);
+  const section = nodes.find((node) => node.tagName === 'SECTION');
+  const toggle = nodes.find((node) => node.attributes['data-role'] === 'panel-toggle');
+  const originalChildCount = panel.host.shadowRoot.children.length;
+
+  assert.equal(toggle.attributes['aria-expanded'], 'true');
+  toggle.click();
+  assert.equal(section.attributes.class, 'collapsed');
+  assert.equal(toggle.textContent, '▤');
+  assert.equal(toggle.attributes['aria-label'], '展开提取面板');
+  assert.equal(toggle.attributes['aria-expanded'], 'false');
+  assert.deepEqual(changes, [true]);
+
+  toggle.click();
+  assert.equal(section.attributes.class, '');
+  assert.equal(toggle.textContent, '−');
+  assert.equal(toggle.attributes['aria-expanded'], 'true');
+  assert.deepEqual(changes, [true, false]);
+  assert.equal(panel.host.shadowRoot.children.length, originalChildCount);
+});
+
+test('panel starts minimized without writing the preference again', () => {
+  const doc = new FakeDocument();
+  const changes = [];
+  const panel = core.createPanel(doc, {}, {
+    initialCollapsed: true,
+    onCollapsedChange: (value) => changes.push(value)
+  });
+  const nodes = descendants(panel.host.shadowRoot);
+  const section = nodes.find((node) => node.tagName === 'SECTION');
+  const toggle = nodes.find((node) => node.attributes['data-role'] === 'panel-toggle');
+
+  assert.equal(section.attributes.class, 'collapsed');
+  assert.equal(toggle.attributes['aria-expanded'], 'false');
+  assert.deepEqual(changes, []);
+});
+
+test('collapsed preference reads and writes safely when storage throws', () => {
+  assert.equal(core.readCollapsedPreference(() => true), true);
+  assert.equal(core.readCollapsedPreference(() => { throw new Error('blocked'); }), false);
+  assert.doesNotThrow(() => core.saveCollapsedPreference(() => { throw new Error('blocked'); }, true));
 });
 
 test('bootstrap registers the three menu commands on a valid novel URL', () => {

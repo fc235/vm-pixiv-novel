@@ -7,6 +7,8 @@
 // @grant        GM_registerMenuCommand
 // @grant        GM_setClipboard
 // @grant        GM_download
+// @grant        GM_getValue
+// @grant        GM_setValue
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -306,7 +308,33 @@
     ['downloadSeries', '下载整个系列', true]
   ];
 
-  const createPanel = (doc, initialActions = {}) => {
+  const PANEL_COLLAPSED_KEY = 'panelCollapsed';
+
+  const readCollapsedPreference = (getValue) => {
+    try {
+      return typeof getValue === 'function'
+        ? Boolean(getValue(PANEL_COLLAPSED_KEY, false))
+        : false;
+    } catch (_error) {
+      return false;
+    }
+  };
+
+  const saveCollapsedPreference = (setValue, value) => {
+    try {
+      if (typeof setValue === 'function') {
+        Promise.resolve(setValue(PANEL_COLLAPSED_KEY, Boolean(value))).catch(() => {});
+      }
+    } catch (_error) {
+      // Current-page UI state remains usable when storage is unavailable.
+    }
+  };
+
+  const createPanel = (doc, initialActions = {}, options = {}) => {
+    const {
+      initialCollapsed = false,
+      onCollapsedChange = () => {}
+    } = options;
     const host = doc.createElement('div');
     host.setAttribute('id', 'pixiv-novel-extractor-host');
     const shadow = host.attachShadow({ mode: 'open' });
@@ -317,6 +345,12 @@
         color: #f5f5f5; font: 14px/1.4 system-ui, sans-serif; }
       section { width: 210px; padding: 12px; border: 1px solid #444; border-radius: 12px;
         background: rgba(28, 28, 32, .96); box-shadow: 0 8px 28px rgba(0, 0, 0, .35); }
+      section.collapsed { box-sizing: border-box; width: 44px; height: 44px; padding: 0;
+        border-radius: 50%; overflow: hidden; }
+      section.collapsed header { width: 100%; height: 100%; margin: 0; }
+      section.collapsed strong, section.collapsed .actions, section.collapsed .status { display: none; }
+      section.collapsed .collapse { width: 100%; height: 100%; padding: 0; border-radius: 50%;
+        font-size: 20px; line-height: 1; }
       header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
       strong { font-size: 14px; }
       .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -337,6 +371,7 @@
     collapse.setAttribute('class', 'collapse');
     collapse.setAttribute('type', 'button');
     collapse.setAttribute('aria-label', '收起提取面板');
+    collapse.setAttribute('data-role', 'panel-toggle');
     header.append(title, collapse);
 
     const actionBox = doc.createElement('div');
@@ -374,13 +409,20 @@
       }
     };
 
-    let collapsed = false;
+    let collapsed = Boolean(initialCollapsed);
+    const renderCollapsed = () => {
+      section.setAttribute('class', collapsed ? 'collapsed' : '');
+      collapse.textContent = collapsed ? '▤' : '−';
+      collapse.setAttribute('title', collapsed ? '展开 Pixiv 小说提取面板' : '最小化 Pixiv 小说提取面板');
+      collapse.setAttribute('aria-label', collapsed ? '展开提取面板' : '最小化提取面板');
+      collapse.setAttribute('aria-expanded', String(!collapsed));
+    };
+
+    renderCollapsed();
     collapse.addEventListener('click', () => {
       collapsed = !collapsed;
-      actionBox.hidden = collapsed;
-      status.hidden = collapsed;
-      collapse.textContent = collapsed ? '+' : '−';
-      collapse.setAttribute('aria-label', collapsed ? '展开提取面板' : '收起提取面板');
+      renderCollapsed();
+      onCollapsedChange(collapsed);
     });
 
     return {
@@ -398,6 +440,8 @@
     fetch,
     clipboard: GM_setClipboard,
     download: GM_download,
+    getValue: GM_getValue,
+    setValue: GM_setValue,
     registerMenuCommand: GM_registerMenuCommand,
     Blob,
     createObjectURL: (blob) => URL.createObjectURL(blob),
@@ -420,7 +464,10 @@
       return response.json();
     };
     const client = createPixivClient(requestJson, runtime.delay);
-    const panel = runtime.createPanel(runtime.document, {});
+    const panel = runtime.createPanel(runtime.document, {}, {
+      initialCollapsed: readCollapsedPreference(runtime.getValue),
+      onCollapsedChange: (value) => saveCollapsedPreference(runtime.setValue, value)
+    });
     const controller = createController({
       id,
       client,
@@ -462,6 +509,8 @@
     copyText,
     downloadText,
     createController,
+    readCollapsedPreference,
+    saveCollapsedPreference,
     createPanel,
     bootstrap
   };
