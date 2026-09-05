@@ -10,6 +10,50 @@ test('parses only Pixiv novel detail IDs', () => {
   assert.equal(core.parseNovelId('https://www.pixiv.net/artworks/12345'), null);
 });
 
+test('parses only Pixiv artwork IDs', () => {
+  assert.equal(core.parseArtworkId('https://www.pixiv.net/artworks/12345'), '12345');
+  assert.equal(core.parseArtworkId('https://www.pixiv.net/artworks/nope'), null);
+  assert.equal(core.parseArtworkId('https://www.pixiv.net/novel/show.php?id=12345'), null);
+});
+
+test('formats original image page names', () => {
+  assert.equal(core.imageExtension('https://i.pximg.net/42_p0.PNG?x=1'), 'png');
+  assert.equal(core.imageExtension('https://example.test/file.svg'), 'jpg');
+  assert.equal(core.formatPageFilename(0, 12, 'https://i.pximg.net/42_p0.jpg'), '001.jpg');
+  assert.equal(core.formatPageFilename(11, 12, 'https://i.pximg.net/42_p11.webp'), '012.webp');
+});
+
+test('maps artwork originals in Pixiv order', async () => {
+  const calls = [];
+  const client = core.createArtworkClient(async (url) => {
+    calls.push(url);
+    return url.includes('/pages')
+      ? { error: false, body: [
+          { urls: { original: 'https://i.pximg.net/10_p0.jpg' } },
+          { urls: { original: 'https://i.pximg.net/10_p1.png' } }
+        ] }
+      : { error: false, body: { id: '10', title: '作品名', illustType: 0 } };
+  });
+  assert.deepEqual(await client.getArtwork('10'), {
+    id: '10', title: '作品名', pages: [
+      { index: 0, url: 'https://i.pximg.net/10_p0.jpg' },
+      { index: 1, url: 'https://i.pximg.net/10_p1.png' }
+    ]
+  });
+  assert.deepEqual(calls, ['/ajax/illust/10?lang=zh', '/ajax/illust/10/pages?lang=zh']);
+});
+
+test('rejects missing originals and ugoira', async () => {
+  const missing = core.createArtworkClient(async (url) => url.includes('/pages')
+    ? { error: false, body: [{ urls: {} }] }
+    : { error: false, body: { title: '作品', illustType: 0 } });
+  const ugoira = core.createArtworkClient(async () => ({
+    error: false, body: { title: '动图', illustType: 2 }
+  }));
+  await assert.rejects(missing.getArtwork('10'), /原图地址/);
+  await assert.rejects(ugoira.getArtwork('10'), /动图作品暂不支持/);
+});
+
 test('converts Pixiv markers to readable text', () => {
   const raw = '[chapter:序章]\n[[rb:漢字 > かんじ]][newpage][jump:3][pixivimage:42]';
   assert.equal(

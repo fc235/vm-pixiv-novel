@@ -4,11 +4,15 @@
 // @version      0.2.0
 // @description  提取 Pixiv 单篇小说或整个系列，并复制或下载为纯文本，支持可记忆的最小化面板。
 // @match        https://www.pixiv.net/novel/show.php?id=*
+// @match        https://www.pixiv.net/artworks/*
+// @require      https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js
 // @grant        GM_registerMenuCommand
 // @grant        GM_setClipboard
 // @grant        GM_download
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_xmlhttpRequest
+// @connect      i.pximg.net
 // @run-at       document-idle
 // ==/UserScript==
 
@@ -21,6 +25,29 @@
       ? parsed.searchParams.get('id')?.match(/^\d+$/)?.[0] ?? null
       : null;
   };
+
+  const parseArtworkId = (url) => {
+    try {
+      const parsed = new URL(url);
+      const match = parsed.pathname.match(/^\/artworks\/(\d+)\/?$/);
+      return parsed.hostname === 'www.pixiv.net' ? match?.[1] ?? null : null;
+    } catch (_error) {
+      return null;
+    }
+  };
+
+  const imageExtension = (url) => {
+    try {
+      const value = new URL(url).pathname.match(/\.([a-z0-9]+)$/i)?.[1].toLowerCase();
+      return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'avif'].includes(value) ? value : 'jpg';
+    } catch (_error) {
+      return 'jpg';
+    }
+  };
+
+  const formatPageFilename = (index, total, url) => (
+    `${String(index + 1).padStart(Math.max(3, String(total).length), '0')}.${imageExtension(url)}`
+  );
 
   const convertPixivText = (raw) => String(raw ?? '')
     .replace(/\r\n?/g, '\n')
@@ -71,6 +98,32 @@
     }
     if (!response.body) throw new Error('Pixiv 响应缺少正文数据');
     return response.body;
+  };
+
+  const createArtworkClient = (requestJson) => {
+    const getArtwork = async (id) => {
+      const artworkId = requireNumericId(id, '作品 ID');
+      const info = responseBody(await requestJson(`/ajax/illust/${artworkId}?lang=zh`));
+      if (Number(info.illustType) === 2) throw new Error('动图作品暂不支持');
+
+      const pages = responseBody(await requestJson(`/ajax/illust/${artworkId}/pages?lang=zh`));
+      if (!Array.isArray(pages) || pages.length === 0) throw new Error('作品没有可下载的页面');
+      const mappedPages = pages.map((page, index) => {
+        const url = page?.urls?.original;
+        if (typeof url !== 'string' || !/^https:\/\/i\.pximg\.net\//.test(url)) {
+          throw new Error('作品缺少原图地址');
+        }
+        return { index, url };
+      });
+
+      return {
+        id: String(info.id ?? artworkId),
+        title: String(info.title ?? '').trim() || `作品 ${artworkId}`,
+        pages: mappedPages
+      };
+    };
+
+    return { getArtwork };
   };
 
   const errorMessage = (error) => error instanceof Error ? error.message : String(error);
@@ -500,11 +553,15 @@
 
   const api = {
     parseNovelId,
+    parseArtworkId,
+    imageExtension,
+    formatPageFilename,
     convertPixivText,
     sanitizeFilename,
     formatNovel,
     formatSeries,
     createPixivClient,
+    createArtworkClient,
     extractNovelFromDocument,
     copyText,
     downloadText,
