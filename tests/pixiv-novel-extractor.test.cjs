@@ -332,8 +332,10 @@ test('single artwork retries once and downloads without ZIP', async () => {
   let attempts = 0;
   let zipCalls = 0;
   const files = [];
+  const events = [];
   const downloader = core.createArtworkDownloader({
     requestBinary: async () => {
+      events.push('request');
       attempts += 1;
       if (attempts === 1) throw new Error('temporary');
       return new ArrayBuffer(1);
@@ -344,10 +346,15 @@ test('single artwork retries once and downloads without ZIP', async () => {
   });
   const result = await downloader.download({
     id: '10', title: 'A/B', pages: [{ index: 0, url: 'https://i.pximg.net/10_p0.png' }]
-  });
+  }, (progress) => events.push(progress));
   assert.equal(attempts, 2);
   assert.equal(zipCalls, 0);
   assert.equal(files[0][0], '[pixiv_10] A_B.png');
+  assert.deepEqual(events, [
+    { phase: 'download', done: 0, total: 1 },
+    'request',
+    'request'
+  ]);
   assert.deepEqual(result, { kind: 'single', successCount: 1, failureCount: 0 });
 });
 
@@ -548,7 +555,7 @@ test('artwork controller reports download and ZIP progress', async () => {
   const downloadStarted = new Promise((resolve) => { signalDownloadStarted = resolve; });
   const artwork = { id: '10', title: '作品', pages: [{}, {}] };
   const controller = core.createArtworkController({
-    id: '10',
+    resolveId: () => '10',
     client: {
       getArtwork: async () => {
         clientCalls += 1;
@@ -853,4 +860,68 @@ test('artwork URL registers only artwork download UI', () => {
   assert.equal(panelOptions.initialCollapsed, true);
   assert.equal(typeof controller.downloadArtwork, 'function');
   assert.equal(controller.copyCurrent, undefined);
+});
+
+test('artwork download follows live A to B SPA navigation', async () => {
+  let href = 'https://www.pixiv.net/artworks/10';
+  const apiRequests = [];
+  const imageRequests = [];
+  const downloads = [];
+  const panel = {
+    setActions() {},
+    setStatus() {},
+    setBusy() {},
+    setSeriesAvailable() {}
+  };
+  const controller = core.bootstrap({
+    getHref: () => href,
+    document: {},
+    fetch: async (url) => {
+      apiRequests.push(url);
+      const id = url.match(/\/illust\/(\d+)/)[1];
+      return {
+        ok: true,
+        json: async () => url.includes('/pages')
+          ? { error: false, body: [{ urls: { original: `https://i.pximg.net/${id}_p0.jpg` } }] }
+          : { error: false, body: { id, title: `作品 ${id}`, illustType: 0 } }
+      };
+    },
+    clipboard: () => {},
+    download: (options) => {
+      downloads.push(options.name);
+      options.onload();
+    },
+    gmRequest: (options) => {
+      imageRequests.push(options.url);
+      options.onload({ status: 200, response: new ArrayBuffer(1) });
+    },
+    createZip: () => new FakeZip(),
+    registerMenuCommand: () => {},
+    Blob: class {},
+    createObjectURL: () => 'blob:test',
+    revokeObjectURL: () => {},
+    delay: async () => {},
+    getValue: () => false,
+    setValue: () => {},
+    createPanel: () => panel
+  });
+
+  await controller.downloadArtwork();
+  href = 'https://www.pixiv.net/artworks/20';
+  await controller.downloadArtwork();
+
+  assert.deepEqual(apiRequests, [
+    '/ajax/illust/10?lang=zh',
+    '/ajax/illust/10/pages?lang=zh',
+    '/ajax/illust/20?lang=zh',
+    '/ajax/illust/20/pages?lang=zh'
+  ]);
+  assert.deepEqual(imageRequests, [
+    'https://i.pximg.net/10_p0.jpg',
+    'https://i.pximg.net/20_p0.jpg'
+  ]);
+  assert.deepEqual(downloads, [
+    '[pixiv_10] 作品 10.jpg',
+    '[pixiv_20] 作品 20.jpg'
+  ]);
 });

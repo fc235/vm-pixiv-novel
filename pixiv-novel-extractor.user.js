@@ -323,6 +323,7 @@
 
     const download = async (artwork, onProgress = () => {}) => {
       const total = artwork.pages.length;
+      onProgress({ phase: 'download', done: 0, total });
       if (total === 1) {
         const page = artwork.pages[0];
         const data = await fetchPage(page);
@@ -437,15 +438,22 @@
     return { loadCurrent, copyCurrent, downloadCurrent, downloadSeries };
   };
 
-  const createArtworkController = ({ id, client, downloader, setStatus, setBusy }) => {
-    let currentArtwork = null;
+  const createArtworkController = ({ resolveId, client, downloader, setStatus, setBusy }) => {
+    const artworkById = new Map();
     let activeDownload = null;
 
-    const loadArtwork = async () => {
-      if (currentArtwork) return currentArtwork;
+    const currentArtworkId = () => {
+      const id = resolveId();
+      if (!id) throw new Error('当前页面不是有效的作品页面');
+      return id;
+    };
+
+    const loadArtwork = async (id = currentArtworkId()) => {
+      if (artworkById.has(id)) return artworkById.get(id);
       setStatus('正在读取作品信息');
-      currentArtwork = await client.getArtwork(id);
-      return currentArtwork;
+      const artwork = await client.getArtwork(id);
+      artworkById.set(id, artwork);
+      return artwork;
     };
 
     const run = async (action) => {
@@ -463,7 +471,8 @@
     const downloadArtwork = () => {
       if (activeDownload) return activeDownload;
       activeDownload = run(async () => {
-        const artwork = await loadArtwork();
+        const id = currentArtworkId();
+        const artwork = await loadArtwork(id);
         const result = await downloader.download(artwork, (progress) => {
           if (progress.phase === 'download') {
             setStatus(`正在下载原图：${progress.done} / ${progress.total}`);
@@ -621,7 +630,7 @@
   };
 
   const browserEnvironment = () => ({
-    href: location.href,
+    getHref: () => location.href,
     document,
     fetch,
     clipboard: GM_setClipboard,
@@ -677,7 +686,7 @@
     return controller;
   };
 
-  const bootstrapArtwork = (runtime, id, requestJson) => {
+  const bootstrapArtwork = (runtime, getHref, requestJson) => {
     const client = createArtworkClient(requestJson);
     const panel = runtime.createPanel(runtime.document, {}, {
       titleText: 'Pixiv 作品下载',
@@ -699,7 +708,7 @@
       })
     });
     const controller = createArtworkController({
-      id,
+      resolveId: () => parseArtworkId(getHref()),
       client,
       downloader,
       setStatus: panel.setStatus,
@@ -718,8 +727,12 @@
 
   const bootstrap = (environment) => {
     const runtime = environment ?? browserEnvironment();
-    const novelId = parseNovelId(runtime.href);
-    const artworkId = parseArtworkId(runtime.href);
+    const getHref = typeof runtime.getHref === 'function'
+      ? runtime.getHref
+      : () => runtime.href;
+    const initialHref = getHref();
+    const novelId = parseNovelId(initialHref);
+    const artworkId = parseArtworkId(initialHref);
     if (!novelId && !artworkId) return null;
 
     const requestJson = async (url) => {
@@ -733,7 +746,7 @@
 
     return novelId
       ? bootstrapNovel(runtime, novelId, requestJson)
-      : bootstrapArtwork(runtime, artworkId, requestJson);
+      : bootstrapArtwork(runtime, getHref, requestJson);
   };
 
   const api = {
