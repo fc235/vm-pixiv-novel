@@ -439,6 +439,7 @@
 
   const createArtworkController = ({ id, client, downloader, setStatus, setBusy }) => {
     let currentArtwork = null;
+    let activeDownload = null;
 
     const loadArtwork = async () => {
       if (currentArtwork) return currentArtwork;
@@ -459,19 +460,25 @@
       }
     };
 
-    const downloadArtwork = () => run(async () => {
-      const artwork = await loadArtwork();
-      const result = await downloader.download(artwork, (progress) => {
-        if (progress.phase === 'download') {
-          setStatus(`正在下载原图：${progress.done} / ${progress.total}`);
-        } else if (progress.phase === 'zip') {
-          setStatus(`正在生成 ZIP：${Math.round(progress.percent)}%`);
-        }
+    const downloadArtwork = () => {
+      if (activeDownload) return activeDownload;
+      activeDownload = run(async () => {
+        const artwork = await loadArtwork();
+        const result = await downloader.download(artwork, (progress) => {
+          if (progress.phase === 'download') {
+            setStatus(`正在下载原图：${progress.done} / ${progress.total}`);
+          } else if (progress.phase === 'zip') {
+            setStatus(`正在生成 ZIP：${Math.round(progress.percent)}%`);
+          }
+        });
+        setStatus(result.kind === 'single'
+          ? '原图下载完成'
+          : `ZIP 下载完成：成功 ${result.successCount} 张，失败 ${result.failureCount} 张`);
+      }).finally(() => {
+        activeDownload = null;
       });
-      setStatus(result.kind === 'single'
-        ? '原图下载完成'
-        : `ZIP 下载完成：成功 ${result.successCount} 张，失败 ${result.failureCount} 张`);
-    });
+      return activeDownload;
+    };
 
     return { loadArtwork, downloadArtwork };
   };

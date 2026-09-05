@@ -530,14 +530,28 @@ test('controller downloads a formatted series using its title', async () => {
 test('artwork controller reports download and ZIP progress', async () => {
   const statuses = [];
   const busy = [];
+  let clientCalls = 0;
+  let downloaderCalls = 0;
+  let releaseDownload;
+  let signalDownloadStarted;
+  const downloadGate = new Promise((resolve) => { releaseDownload = resolve; });
+  const downloadStarted = new Promise((resolve) => { signalDownloadStarted = resolve; });
   const artwork = { id: '10', title: '作品', pages: [{}, {}] };
   const controller = core.createArtworkController({
     id: '10',
-    client: { getArtwork: async () => artwork },
+    client: {
+      getArtwork: async () => {
+        clientCalls += 1;
+        return artwork;
+      }
+    },
     downloader: {
       download: async (_artwork, progress) => {
+        downloaderCalls += 1;
         progress({ phase: 'download', done: 1, total: 2 });
         progress({ phase: 'zip', percent: 50 });
+        signalDownloadStarted();
+        await downloadGate;
         return { kind: 'zip', successCount: 2, failureCount: 0 };
       }
     },
@@ -545,7 +559,16 @@ test('artwork controller reports download and ZIP progress', async () => {
     setBusy: (value) => busy.push(value)
   });
 
-  await controller.downloadArtwork();
+  const firstDownload = controller.downloadArtwork();
+  const concurrentDownload = controller.downloadArtwork();
+  await downloadStarted;
+
+  assert.equal(firstDownload, concurrentDownload);
+  assert.equal(clientCalls, 1);
+  assert.equal(downloaderCalls, 1);
+
+  releaseDownload();
+  await Promise.all([firstDownload, concurrentDownload]);
 
   assert.deepEqual(busy, [true, false]);
   assert.deepEqual(statuses, [
@@ -554,6 +577,10 @@ test('artwork controller reports download and ZIP progress', async () => {
     '正在生成 ZIP：50%',
     'ZIP 下载完成：成功 2 张，失败 0 张'
   ]);
+
+  await controller.downloadArtwork();
+  assert.equal(clientCalls, 1);
+  assert.equal(downloaderCalls, 2);
 });
 
 class FakeElement {
