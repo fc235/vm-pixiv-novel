@@ -257,8 +257,26 @@
     await Promise.resolve(clipboard(text, 'text'));
   };
 
-  const downloadText = (title, text, environment) => {
-    const blob = new environment.Blob([text], { type: 'text/plain;charset=utf-8' });
+  const requestBinary = (url, gmRequest) => new Promise((resolve, reject) => {
+    try {
+      gmRequest({
+        method: 'GET',
+        url,
+        headers: { Referer: 'https://www.pixiv.net/' },
+        responseType: 'arraybuffer',
+        onload: (response) => {
+          if (response.status >= 200 && response.status < 300) resolve(response.response);
+          else reject(new Error(`HTTP ${response.status}`));
+        },
+        onerror: () => reject(new Error('图片请求失败')),
+        ontimeout: () => reject(new Error('图片请求超时'))
+      });
+    } catch (error) {
+      reject(error);
+    }
+  });
+
+  const downloadBlob = (filename, blob, environment) => {
     const url = environment.createObjectURL(blob);
 
     return new Promise((resolve, reject) => {
@@ -274,7 +292,7 @@
       try {
         environment.download({
           url,
-          name: `${sanitizeFilename(title)}.txt`,
+          name: filename,
           saveAs: true,
           onload: () => finish(),
           onerror: () => finish(new Error('下载失败'))
@@ -283,6 +301,70 @@
         finish(error);
       }
     });
+  };
+
+  const downloadText = (title, text, environment) => {
+    const blob = new environment.Blob([text], { type: 'text/plain;charset=utf-8' });
+    return downloadBlob(`${sanitizeFilename(title)}.txt`, blob, environment);
+  };
+
+  const createArtworkDownloader = ({ requestBinary: fetchBinary, createZip, makeBlob, downloadFile }) => {
+    const fetchPage = async (page) => {
+      let lastError;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          return await fetchBinary(page.url);
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      throw lastError;
+    };
+
+    const download = async (artwork, onProgress = () => {}) => {
+      const total = artwork.pages.length;
+      if (total === 1) {
+        const page = artwork.pages[0];
+        const data = await fetchPage(page);
+        const blob = makeBlob([data], { type: 'application/octet-stream' });
+        await downloadFile(
+          `[pixiv_${artwork.id}] ${sanitizeFilename(artwork.title)}.${imageExtension(page.url)}`,
+          blob
+        );
+        return { kind: 'single', successCount: 1, failureCount: 0 };
+      }
+
+      const zip = createZip();
+      const failures = [];
+      let successCount = 0;
+      for (let index = 0; index < total; index += 1) {
+        const page = artwork.pages[index];
+        try {
+          zip.file(formatPageFilename(page.index, total, page.url), await fetchPage(page));
+          successCount += 1;
+        } catch (error) {
+          failures.push({ page, url: page.url, error });
+          if (failures.length / total > 0.2) {
+            throw new Error(`失败图片超过 20%（${failures.length} / ${total}），已停止下载`);
+          }
+        }
+        onProgress({ phase: 'download', done: index + 1, total });
+      }
+
+      if (failures.length) {
+        zip.file('下载失败.txt', failures.map(({ page, url, error }) => (
+          `第 ${page.index + 1} 页：${url} — ${errorMessage(error)}`
+        )).join('\n'));
+      }
+      const blob = await zip.generateAsync(
+        { type: 'blob', compression: 'STORE' },
+        (metadata) => onProgress({ phase: 'zip', percent: metadata.percent })
+      );
+      await downloadFile(`[pixiv_${artwork.id}] ${sanitizeFilename(artwork.title)}.zip`, blob);
+      return { kind: 'zip', successCount, failureCount: failures.length };
+    };
+
+    return { download };
   };
 
   const createController = (dependencies) => {
@@ -564,7 +646,10 @@
     createArtworkClient,
     extractNovelFromDocument,
     copyText,
+    requestBinary,
+    downloadBlob,
     downloadText,
+    createArtworkDownloader,
     createController,
     readCollapsedPreference,
     saveCollapsedPreference,

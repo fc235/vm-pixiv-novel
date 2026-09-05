@@ -249,6 +249,25 @@ test('copyText completes when the clipboard API does not invoke a callback', asy
   assert.deepEqual(calls, [['内容', 'text']]);
 });
 
+test('requests image binary with Pixiv referer', async () => {
+  let sent;
+  const data = new ArrayBuffer(2);
+  const result = await core.requestBinary('https://i.pximg.net/a.jpg', (options) => {
+    sent = options;
+    options.onload({ status: 200, response: data });
+  });
+  assert.equal(result, data);
+  assert.equal(sent.method, 'GET');
+  assert.equal(sent.responseType, 'arraybuffer');
+  assert.equal(sent.headers.Referer, 'https://www.pixiv.net/');
+});
+
+test('rejects failed image responses', async () => {
+  await assert.rejects(core.requestBinary('https://i.pximg.net/a.jpg', (options) => {
+    options.onload({ status: 403, response: null });
+  }), /HTTP 403/);
+});
+
 test('downloads a UTF-8 text blob and revokes its URL', async () => {
   const calls = { blobs: [], downloads: [], revoked: [] };
   class FakeBlob {
@@ -274,6 +293,114 @@ test('downloads a UTF-8 text blob and revokes its URL', async () => {
   assert.equal(calls.downloads[0].url, 'blob:test');
   assert.equal(calls.downloads[0].name, 'A_B.txt');
   assert.deepEqual(calls.revoked, ['blob:test']);
+});
+
+class FakeZip {
+  constructor() {
+    this.files = [];
+    this.generateCalls = [];
+  }
+
+  file(name, data) {
+    this.files.push([name, data]);
+    return this;
+  }
+
+  async generateAsync(options, onUpdate) {
+    this.generateCalls.push(options);
+    onUpdate({ percent: 50 });
+    return { zip: true };
+  }
+}
+
+const artworkPages = (count) => Array.from({ length: count }, (_, index) => ({
+  index,
+  url: `https://i.pximg.net/10_p${index}.jpg`
+}));
+
+test('single artwork retries once and downloads without ZIP', async () => {
+  let attempts = 0;
+  let zipCalls = 0;
+  const files = [];
+  const downloader = core.createArtworkDownloader({
+    requestBinary: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('temporary');
+      return new ArrayBuffer(1);
+    },
+    createZip: () => { zipCalls += 1; return new FakeZip(); },
+    makeBlob: (parts, options) => ({ parts, type: options.type }),
+    downloadFile: async (name, blob) => files.push([name, blob])
+  });
+  const result = await downloader.download({
+    id: '10', title: 'A/B', pages: [{ index: 0, url: 'https://i.pximg.net/10_p0.png' }]
+  });
+  assert.equal(attempts, 2);
+  assert.equal(zipCalls, 0);
+  assert.equal(files[0][0], '[pixiv_10] A_B.png');
+  assert.deepEqual(result, { kind: 'single', successCount: 1, failureCount: 0 });
+});
+
+test('exactly 20% failures creates a partial ZIP and failure list', async () => {
+  const attempts = new Map();
+  const zip = new FakeZip();
+  const downloads = [];
+  const downloader = core.createArtworkDownloader({
+    requestBinary: async (url) => {
+      attempts.set(url, (attempts.get(url) ?? 0) + 1);
+      if (url.includes('_p2.')) throw new Error('forbidden');
+      return new ArrayBuffer(1);
+    },
+    createZip: () => zip,
+    makeBlob: () => { throw new Error('single Blob path must not run'); },
+    downloadFile: async (name, blob) => downloads.push([name, blob])
+  });
+  const result = await downloader.download({ id: '10', title: '漫画', pages: artworkPages(5) });
+  assert.deepEqual(zip.files.map(([name]) => name), [
+    '001.jpg', '002.jpg', '004.jpg', '005.jpg', '下载失败.txt'
+  ]);
+  assert.match(zip.files.at(-1)[1], /第 3 页.*forbidden/);
+  assert.deepEqual(zip.generateCalls, [{ type: 'blob', compression: 'STORE' }]);
+  assert.equal(downloads[0][0], '[pixiv_10] 漫画.zip');
+  assert.deepEqual(result, { kind: 'zip', successCount: 4, failureCount: 1 });
+});
+
+test('exceeds 20% failures stops and creates no ZIP download', async () => {
+  let attempts = 0;
+  const zip = new FakeZip();
+  const downloads = [];
+  const downloader = core.createArtworkDownloader({
+    requestBinary: async () => { attempts += 1; throw new Error('blocked'); },
+    createZip: () => zip,
+    makeBlob: () => ({}),
+    downloadFile: async (...args) => downloads.push(args)
+  });
+  await assert.rejects(
+    downloader.download({ id: '10', title: '漫画', pages: artworkPages(5) }),
+    /失败图片超过 20%/
+  );
+  assert.equal(attempts, 4);
+  assert.equal(zip.generateCalls.length, 0);
+  assert.equal(downloads.length, 0);
+});
+
+test('single image failure retries once and creates no file', async () => {
+  let attempts = 0;
+  let zipCalls = 0;
+  const downloads = [];
+  const downloader = core.createArtworkDownloader({
+    requestBinary: async () => { attempts += 1; throw new Error('blocked'); },
+    createZip: () => { zipCalls += 1; return new FakeZip(); },
+    makeBlob: () => ({}),
+    downloadFile: async (...args) => downloads.push(args)
+  });
+  await assert.rejects(
+    downloader.download({ id: '10', title: '单图', pages: artworkPages(1) }),
+    /blocked/
+  );
+  assert.equal(attempts, 2);
+  assert.equal(zipCalls, 0);
+  assert.equal(downloads.length, 0);
 });
 
 const makeControllerDependencies = (overrides = {}) => ({
