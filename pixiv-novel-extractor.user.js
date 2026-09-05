@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Pixiv 小说提取器
+// @name         Pixiv 小说与作品下载器
 // @namespace    https://github.com/local/pixiv-novel-extractor
-// @version      0.2.0
-// @description  提取 Pixiv 单篇小说或整个系列，并复制或下载为纯文本，支持可记忆的最小化面板。
+// @version      0.3.0
+// @description  提取 Pixiv 小说，并下载插画或漫画作品的原图。
 // @match        https://www.pixiv.net/novel/show.php?id=*
 // @match        https://www.pixiv.net/artworks/*
 // @require      https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js
