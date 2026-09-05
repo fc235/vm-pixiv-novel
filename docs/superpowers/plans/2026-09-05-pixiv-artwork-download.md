@@ -14,7 +14,7 @@
 - Match `https://www.pixiv.net/artworks/*` and process only the current artwork's Pixiv-provided original pages.
 - Single-page works download one original directly and never instantiate JSZip.
 - Multi-page works use JSZip `STORE`, preserve Pixiv order, and name pages `001.jpg`, `002.png`, and so on.
-- Each image gets exactly two attempts: the initial request plus one retry.
+- Each image gets at most two attempts: the initial request plus one retry only after failure.
 - Failure ratio exactly 20% produces a partial ZIP with UTF-8 `下载失败.txt`; once failures exceed 20% of total pages, stop and produce no ZIP.
 - Single-image failure produces no file.
 - Single filename: `[pixiv_ID] sanitized title.ext`; multi filename: `[pixiv_ID] sanitized title.zip`.
