@@ -437,10 +437,52 @@
     return { loadCurrent, copyCurrent, downloadCurrent, downloadSeries };
   };
 
-  const actionDefinitions = [
+  const createArtworkController = ({ id, client, downloader, setStatus, setBusy }) => {
+    let currentArtwork = null;
+
+    const loadArtwork = async () => {
+      if (currentArtwork) return currentArtwork;
+      setStatus('正在读取作品信息');
+      currentArtwork = await client.getArtwork(id);
+      return currentArtwork;
+    };
+
+    const run = async (action) => {
+      setBusy(true);
+      try {
+        return await action();
+      } catch (error) {
+        setStatus(`失败：${errorMessage(error)}`);
+        throw error;
+      } finally {
+        setBusy(false);
+      }
+    };
+
+    const downloadArtwork = () => run(async () => {
+      const artwork = await loadArtwork();
+      const result = await downloader.download(artwork, (progress) => {
+        if (progress.phase === 'download') {
+          setStatus(`正在下载原图：${progress.done} / ${progress.total}`);
+        } else if (progress.phase === 'zip') {
+          setStatus(`正在生成 ZIP：${Math.round(progress.percent)}%`);
+        }
+      });
+      setStatus(result.kind === 'single'
+        ? '原图下载完成'
+        : `ZIP 下载完成：成功 ${result.successCount} 张，失败 ${result.failureCount} 张`);
+    });
+
+    return { loadArtwork, downloadArtwork };
+  };
+
+  const novelActionDefinitions = [
     ['copyCurrent', '复制当前小说', false],
     ['downloadCurrent', '下载当前小说', false],
     ['downloadSeries', '下载整个系列', true]
+  ];
+  const artworkActionDefinitions = [
+    ['downloadArtwork', '下载当前作品', false]
   ];
 
   const PANEL_COLLAPSED_KEY = 'panelCollapsed';
@@ -467,6 +509,8 @@
 
   const createPanel = (doc, initialActions = {}, options = {}) => {
     const {
+      titleText = 'Pixiv 小说提取',
+      definitions = novelActionDefinitions,
       initialCollapsed = false,
       onCollapsedChange = () => {}
     } = options;
@@ -500,7 +544,7 @@
     const section = doc.createElement('section');
     const header = doc.createElement('header');
     const title = doc.createElement('strong');
-    title.textContent = 'Pixiv 小说提取';
+    title.textContent = titleText;
     const collapse = doc.createElement('button');
     collapse.textContent = '−';
     collapse.setAttribute('class', 'collapse');
@@ -516,7 +560,7 @@
     let busy = false;
     let seriesAvailable = true;
 
-    for (const [name, label, isSeries] of actionDefinitions) {
+    for (const [name, label, isSeries] of definitions) {
       const button = doc.createElement('button');
       button.textContent = label;
       button.setAttribute('type', 'button');
@@ -548,7 +592,7 @@
     const renderCollapsed = () => {
       section.setAttribute('class', collapsed ? 'collapsed' : '');
       collapse.textContent = collapsed ? '▤' : '−';
-      collapse.setAttribute('title', collapsed ? '展开 Pixiv 小说提取面板' : '最小化 Pixiv 小说提取面板');
+      collapse.setAttribute('title', collapsed ? `展开 ${titleText}面板` : `最小化 ${titleText}面板`);
       collapse.setAttribute('aria-label', collapsed ? '展开提取面板' : '最小化提取面板');
       collapse.setAttribute('aria-expanded', String(!collapsed));
     };
@@ -575,6 +619,7 @@
     fetch,
     clipboard: GM_setClipboard,
     download: GM_download,
+    gmRequest: typeof GM_xmlhttpRequest === 'function' ? GM_xmlhttpRequest : undefined,
     getValue: typeof GM_getValue === 'function' ? GM_getValue : undefined,
     setValue: typeof GM_setValue === 'function' ? GM_setValue : undefined,
     registerMenuCommand: GM_registerMenuCommand,
@@ -582,22 +627,14 @@
     createObjectURL: (blob) => URL.createObjectURL(blob),
     revokeObjectURL: (url) => URL.revokeObjectURL(url),
     delay: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    createZip: () => {
+      if (typeof JSZip !== 'function') throw new Error('ZIP 组件未加载');
+      return new JSZip();
+    },
     createPanel
   });
 
-  const bootstrap = (environment) => {
-    const runtime = environment ?? browserEnvironment();
-    const id = parseNovelId(runtime.href);
-    if (!id) return null;
-
-    const requestJson = async (url) => {
-      const response = await runtime.fetch(url, {
-        credentials: 'include',
-        headers: { Accept: 'application/json' }
-      });
-      if (!response.ok) throw new Error(`Pixiv 请求失败（HTTP ${response.status}）`);
-      return response.json();
-    };
+  const bootstrapNovel = (runtime, id, requestJson) => {
     const client = createPixivClient(requestJson, runtime.delay);
     const panel = runtime.createPanel(runtime.document, {}, {
       initialCollapsed: readCollapsedPreference(runtime.getValue),
@@ -621,7 +658,7 @@
     });
     panel.setActions(controller);
 
-    for (const [name, label] of actionDefinitions) {
+    for (const [name, label] of novelActionDefinitions) {
       runtime.registerMenuCommand(label, () => {
         Promise.resolve(controller[name]()).catch(() => {});
       });
@@ -631,6 +668,65 @@
       panel.setStatus(`失败：${errorMessage(error)}`);
     });
     return controller;
+  };
+
+  const bootstrapArtwork = (runtime, id, requestJson) => {
+    const client = createArtworkClient(requestJson);
+    const panel = runtime.createPanel(runtime.document, {}, {
+      titleText: 'Pixiv 作品下载',
+      definitions: artworkActionDefinitions,
+      initialCollapsed: readCollapsedPreference(runtime.getValue),
+      onCollapsedChange: (value) => saveCollapsedPreference(runtime.setValue, value)
+    });
+    const downloader = createArtworkDownloader({
+      requestBinary: (url) => {
+        if (typeof runtime.gmRequest !== 'function') throw new Error('原图请求组件不可用');
+        return requestBinary(url, runtime.gmRequest);
+      },
+      createZip: runtime.createZip,
+      makeBlob: (parts, options) => new runtime.Blob(parts, options),
+      downloadFile: (filename, blob) => downloadBlob(filename, blob, {
+        createObjectURL: runtime.createObjectURL,
+        revokeObjectURL: runtime.revokeObjectURL,
+        download: runtime.download
+      })
+    });
+    const controller = createArtworkController({
+      id,
+      client,
+      downloader,
+      setStatus: panel.setStatus,
+      setBusy: panel.setBusy
+    });
+    panel.setActions(controller);
+
+    for (const [name, label] of artworkActionDefinitions) {
+      runtime.registerMenuCommand(label, () => {
+        Promise.resolve(controller[name]()).catch(() => {});
+      });
+    }
+
+    return controller;
+  };
+
+  const bootstrap = (environment) => {
+    const runtime = environment ?? browserEnvironment();
+    const novelId = parseNovelId(runtime.href);
+    const artworkId = parseArtworkId(runtime.href);
+    if (!novelId && !artworkId) return null;
+
+    const requestJson = async (url) => {
+      const response = await runtime.fetch(url, {
+        credentials: 'include',
+        headers: { Accept: 'application/json' }
+      });
+      if (!response.ok) throw new Error(`Pixiv 请求失败（HTTP ${response.status}）`);
+      return response.json();
+    };
+
+    return novelId
+      ? bootstrapNovel(runtime, novelId, requestJson)
+      : bootstrapArtwork(runtime, artworkId, requestJson);
   };
 
   const api = {
@@ -651,6 +747,7 @@
     downloadText,
     createArtworkDownloader,
     createController,
+    createArtworkController,
     readCollapsedPreference,
     saveCollapsedPreference,
     createPanel,

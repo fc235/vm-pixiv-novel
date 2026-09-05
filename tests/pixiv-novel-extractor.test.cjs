@@ -527,6 +527,35 @@ test('controller downloads a formatted series using its title', async () => {
   assert.match(downloaded[0][1], /^系列\n\n===== 第 1 篇：第一章 =====/);
 });
 
+test('artwork controller reports download and ZIP progress', async () => {
+  const statuses = [];
+  const busy = [];
+  const artwork = { id: '10', title: '作品', pages: [{}, {}] };
+  const controller = core.createArtworkController({
+    id: '10',
+    client: { getArtwork: async () => artwork },
+    downloader: {
+      download: async (_artwork, progress) => {
+        progress({ phase: 'download', done: 1, total: 2 });
+        progress({ phase: 'zip', percent: 50 });
+        return { kind: 'zip', successCount: 2, failureCount: 0 };
+      }
+    },
+    setStatus: (value) => statuses.push(value),
+    setBusy: (value) => busy.push(value)
+  });
+
+  await controller.downloadArtwork();
+
+  assert.deepEqual(busy, [true, false]);
+  assert.deepEqual(statuses, [
+    '正在读取作品信息',
+    '正在下载原图：1 / 2',
+    '正在生成 ZIP：50%',
+    'ZIP 下载完成：成功 2 张，失败 0 张'
+  ]);
+});
+
 class FakeElement {
   constructor(tagName) {
     this.tagName = tagName.toUpperCase();
@@ -601,6 +630,23 @@ test('floating panel exposes three actions and preserves standalone series disab
   assert.equal(actionButtons[0].disabled, false);
   assert.equal(actionButtons[1].disabled, false);
   assert.equal(actionButtons[2].disabled, true);
+});
+
+test('shared panel renders one artwork action', () => {
+  const doc = new FakeDocument();
+  const panel = core.createPanel(doc, { downloadArtwork: async () => {} }, {
+    titleText: 'Pixiv 作品下载',
+    definitions: [['downloadArtwork', '下载当前作品', false]]
+  });
+  const nodes = descendants(panel.host.shadowRoot);
+  const toggle = nodes.find((node) => node.attributes['data-role'] === 'panel-toggle');
+
+  assert.equal(nodes.find((node) => node.tagName === 'STRONG').textContent, 'Pixiv 作品下载');
+  assert.deepEqual(
+    nodes.filter((node) => node.attributes['data-action']).map((node) => node.textContent),
+    ['下载当前作品']
+  );
+  assert.equal(toggle.attributes.title, '最小化 Pixiv 作品下载面板');
 });
 
 test('panel minimizes to one circular launcher and restores without rebuilding', () => {
@@ -730,4 +776,44 @@ test('bootstrap registers the three menu commands on a valid novel URL', () => {
   assert.equal(panelOptions.initialCollapsed, true);
   panelOptions.onCollapsedChange(false);
   assert.deepEqual(writes, [['panelCollapsed', false]]);
+});
+
+test('artwork URL registers only artwork download UI', () => {
+  const labels = [];
+  let panelOptions;
+  const panel = {
+    setActions(actions) { this.actions = actions; },
+    setStatus() {},
+    setBusy() {},
+    setSeriesAvailable() {}
+  };
+  const controller = core.bootstrap({
+    href: 'https://www.pixiv.net/artworks/10',
+    document: {},
+    fetch: async (url) => ({
+      ok: true,
+      json: async () => url.includes('/pages')
+        ? { error: false, body: [{ urls: { original: 'https://i.pximg.net/10_p0.jpg' } }] }
+        : { error: false, body: { id: '10', title: '作品', illustType: 0 } }
+    }),
+    clipboard: () => {},
+    download: () => {},
+    gmRequest: () => {},
+    createZip: () => new FakeZip(),
+    registerMenuCommand: (label) => labels.push(label),
+    Blob: class {},
+    createObjectURL: () => 'blob:test',
+    revokeObjectURL: () => {},
+    delay: async () => {},
+    getValue: () => true,
+    setValue: () => {},
+    createPanel: (_doc, _actions, options) => { panelOptions = options; return panel; }
+  });
+
+  assert.deepEqual(labels, ['下载当前作品']);
+  assert.equal(panelOptions.titleText, 'Pixiv 作品下载');
+  assert.deepEqual(panelOptions.definitions.map((item) => item[1]), ['下载当前作品']);
+  assert.equal(panelOptions.initialCollapsed, true);
+  assert.equal(typeof controller.downloadArtwork, 'function');
+  assert.equal(controller.copyCurrent, undefined);
 });
