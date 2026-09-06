@@ -9,7 +9,7 @@
 3. 将 [`pixiv-novel-extractor.user.js`](pixiv-novel-extractor.user.js) 这一文件的完整内容粘贴进去并保存。
 4. 打开 Pixiv 小说详情页或作品页（例如 `https://www.pixiv.net/novel/show.php?id=123456` 或 `https://www.pixiv.net/artworks/123456`）。
 
-脚本会在页面右下角显示面板，也会注册相应的油猴菜单命令。脚本通过元数据加载固定版本 `jszip@3.10.1`，用于生成多图 ZIP。
+脚本会在页面右下角显示面板，也会注册相应的油猴菜单命令。脚本通过元数据加载与 Tampermonkey 兼容的固定版本 `jszip@3.9.1`，用于生成多图 ZIP。
 
 ## 功能
 

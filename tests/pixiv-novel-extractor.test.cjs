@@ -7,9 +7,9 @@ const core = require('../pixiv-novel-extractor.user.js');
 
 test('metadata declares artwork release dependencies', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'pixiv-novel-extractor.user.js'), 'utf8');
-  assert.match(source, /\/\/ @version\s+0\.3\.0/);
+  assert.match(source, /\/\/ @version\s+0\.3\.1/);
   assert.match(source, /\/\/ @match\s+https:\/\/www\.pixiv\.net\/artworks\/\*/);
-  assert.match(source, /jszip@3\.10\.1\/dist\/jszip\.min\.js/);
+  assert.match(source, /jszip@3\.9\.1\/dist\/jszip\.min\.js/);
   assert.match(source, /\/\/ @grant\s+GM_xmlhttpRequest/);
   assert.match(source, /\/\/ @connect\s+i\.pximg\.net/);
   assert.doesNotMatch(source, /jszip@(?:latest|\*)/i);
